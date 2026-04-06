@@ -1,6 +1,6 @@
 # AI Fact-Checkers in the Wild — Replication Code
 
-Code and data for replicating the analyses in *"AI Fact-Checkers in the Wild: A Field Study of LLM-Written Community Notes on X."*
+Code and data for replicating the analyses in *"AI Fact-Checking in the Wild: A Field Evaluation of LLM-Written Community Notes on X."*
 
 This repository compares LLM-written Community Notes against human-written Community Notes on the same tweets, covering note-level outcomes, rating-level ideology patterns, text/source analysis, and robustness checks.
 
