@@ -51,7 +51,7 @@
                class="inline-flex items-center gap-2 px-5 py-2.5 bg-teal-700 text-white rounded-lg hover:bg-teal-800 transition text-sm font-medium">
                 Paper (arXiv)
             </a>
-            <a href="https://github.com/haiwen-li/cn-ai-writer" target="_blank"
+            <a href="https://github.com/haiwen-li/ai-fact-checking-in-the-wild" target="_blank"
                class="inline-flex items-center gap-2 px-5 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition text-sm font-medium">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
                 Code (GitHub)
@@ -65,18 +65,24 @@
         <section id="abstract" class="py-10 border-t border-gray-100">
             <h2 class="text-2xl font-bold text-gray-900 mb-4">Abstract</h2>
             <p class="text-gray-700 leading-relaxed">
-                Large language models show promising capabilities for contextual fact-checking on social media: they can verify contested claims through deep research, synthesize evidence from multiple sources, and draft explanations at scale. However, prior work evaluates LLM fact-checking only in controlled settings using benchmarks or crowdworker judgments, leaving open how these systems perform in authentic platform environments. We present the first field evaluation of LLM-based fact-checking deployed on a live social media platform, testing performance directly through X Community Notes' AI writer feature over a three-month period. Our LLM writer, a multi-step pipeline that handles multimodal content (text, images, and videos), conducts web and platform-native search, and writes contextual notes, was deployed to write <strong>1,614 notes</strong> on <strong>1,597 tweets</strong> and compared against <strong>1,332 human-written notes</strong> on the same tweets using <strong>108,169 ratings</strong> from <strong>42,521 raters</strong>. Direct comparison of note-level platform outcomes can be complicated by differences in submission timing and rating exposure between LLM and human notes; we therefore pursue two complementary strategies: a rating-level analysis modeling individual rater evaluations, and a note-level analysis that equalizes rater exposure across note types. Rating-level analysis shows that LLM notes receive more positive ratings than human notes across raters with different political viewpoints, suggesting potential for LLM-written notes to achieve cross-partisan consensus. Note-level analysis confirms this advantage: among raters who evaluated all notes on the same post, LLM notes achieve significantly higher helpfulness scores. Our findings demonstrate that LLMs can contribute high-quality, broadly helpful fact-checking at scale, while highlighting that real-world evaluation requires careful attention to platform dynamics absent from controlled settings.
+                We present the first field evaluation of LLM fact-checking deployed on a live social media platform, testing performance directly through X Community Notes' "AI writer" feature over a three-month period. Our LLM writer, a multi-step pipeline that handles multimodal content, conducts web and platform-native search, and writes contextual notes, was deployed to write <mark class="bg-orange-100 text-gray-800 px-1 py-0.5 rounded">1,614 notes</mark> on <mark class="bg-orange-100 text-gray-800 px-1 py-0.5 rounded">1,597 tweets</mark> and compared against <mark class="bg-orange-100 text-gray-800 px-1 py-0.5 rounded">1,332 human-written notes</mark> on the same tweets using <mark class="bg-orange-100 text-gray-800 px-1 py-0.5 rounded">108,169 ratings</mark> from <mark class="bg-orange-100 text-gray-800 px-1 py-0.5 rounded">42,521 raters</mark>. Direct comparison of note-level platform outcomes is complicated by differences in submission timing and exposure between LLM and human notes; we therefore pursue two analysis strategies: a rating-level analysis modeling individual rater evaluations, and a note-level analysis that relies on common raters who rated all notes on the same post.
+            </p>
+            <p class="text-gray-700 leading-relaxed mt-4">
+                Rating-level analysis shows that <mark class="bg-emerald-100 text-gray-800 px-1 py-0.5 rounded">LLM notes receive more positive ratings than human notes across raters with different political viewpoints</mark>, and note-level analysis shows <mark class="bg-emerald-100 text-gray-800 px-1 py-0.5 rounded">LLM notes achieve significantly higher helpfulness scores among common raters</mark>. Rater-provided tags suggest that people consider LLM notes to <mark class="bg-emerald-100 text-gray-800 px-1 py-0.5 rounded">use more neutral language and cite better sources</mark>. These findings provide field evidence that LLMs can contribute high-quality, broadly helpful fact-checking notes at scale, while showing that their evaluation is shaped by platform dynamics absent from controlled offline settings.
             </p>
         </section>
 
         <!-- System Design -->
         <section id="system" class="py-10 border-t border-gray-100">
             <h2 class="text-2xl font-bold text-gray-900 mb-4">LLM Writer Pipeline</h2>
+            <p class="text-gray-700 leading-relaxed mb-4">
+                For each eligible post, our LLM writer compiles the post's text and timestamp together with context from quoted or replied-to posts, and directly processes associated images or video thumbnails. Grok-4-fast then conducts web and X search to gather evidence. GPT-5-mini decides whether a note is warranted and, when it is, drafts a source-grounded Community Note.
+            </p>
             <p class="text-gray-700 leading-relaxed mb-6">
-                Our AI writer pipeline processes posts eligible for an AI note through a multi-step workflow. For each post, the system retrieves the full post context, conducts research with web and X search, decides whether a note is needed, drafts a Community Note grounded in research evidence, verifies all source URLs, and submits the final note to the platform.
+                The triage step declined to write when a post was unlikely to be misleading (29.0% of retrieved posts) or when evidence was insufficient (6.9%). Drafts passed URL-validity, length, and Community Notes ClaimOpinion quality checks before submission.
             </p>
             <figure class="mb-2">
-                <img src="writer-workflow.png" alt="AI writer pipeline workflow diagram" class="w-full rounded-lg border border-gray-200 shadow-sm">
+                <img src="writer-workflow.png" alt="LLM writer pipeline workflow diagram" class="w-full rounded-lg border border-gray-200 shadow-sm">
                 <figcaption class="text-sm text-gray-500 mt-3 text-center">
                     Overview of the AI writer pipeline. Flowchart created with Gemini.
                 </figcaption>
@@ -91,25 +97,34 @@
                 <div class="bg-teal-50 rounded-lg p-5 border border-teal-100">
                     <h3 class="font-semibold text-teal-900 mb-2 text-base">Ecological Validity</h3>
                     <p class="text-gray-700 text-sm leading-relaxed">
-                        We present, to our knowledge, the first online evaluation of AI fact-checking deployed on a real-world social media platform, assessed using organic user feedback under natural conditions, rather than recruited evaluators or synthetic benchmarks.
+                        We present, to our knowledge, the first field evaluation of LLM fact-checking deployed on a real-world social media platform, assessed using organic user feedback under natural conditions rather than recruited evaluators or synthetic benchmarks.
                     </p>
                 </div>
                 <div class="bg-teal-50 rounded-lg p-5 border border-teal-100">
                     <h3 class="font-semibold text-teal-900 mb-2 text-base">Platform Dynamics Complicate Real-world Evaluation</h3>
                     <p class="text-gray-700 text-sm leading-relaxed">
-                        LLM notes were typically submitted later than human notes (because platform policy requires users flag posts first before AI writers can write) and accumulated fewer ratings (median 22 vs. 51), resulting in different exposures. Since the Community Notes scoring algorithm penalizes notes with fewer ratings, platform-generated helpfulness scores could unfairly disadvantage LLM notes. We address this with two complementary analyses: one that examines individual raters' evaluations directly, and one that ensures LLM and human notes are compared under equal exposures before computing helpfulness scores.
+                        LLM notes were typically submitted later than human notes because platform policy requires users to flag posts before AI writers can write. They consequently accumulated fewer ratings (median 22 vs. 51), and the Community Notes scoring algorithm's regularization can deflate scores for notes with fewer ratings. We therefore analyze individual ratings directly and complement that analysis with a common-rater design that recomputes note scores using only people who rated every note on the same post.
                     </p>
                 </div>
                 <div class="bg-teal-50 rounded-lg p-5 border border-teal-100">
-                    <h3 class="font-semibold text-teal-900 mb-2 text-base">LLM Notes Receive More Positive Ratings Across the Ideological Spectrum</h3>
+                    <h3 class="font-semibold text-teal-900 mb-2 text-base">LLM Notes Receive More Positive Ratings Across Ideologies and Among Common Raters</h3>
+                    <p class="text-gray-700 text-sm leading-relaxed mb-3">
+                        Across raters with left-leaning, neutral, and right-leaning rating patterns, LLM-written notes had higher average percentages of helpful ratings and lower average percentages of unhelpful ratings than human-written notes, with the largest advantage among neutral raters (Figure 1). The primary model estimates an approximately 10-percentage-point increase in rating score for LLM notes among centrist raters (AI coefficient = 0.104, <em>p</em> &lt; 0.001). Exploratory subgroup analyses find the largest advantages for health and medicine and conspiracy/pseudoscience, and the smallest for posts about AI-generated content.
+                    </p>
                     <p class="text-gray-700 text-sm leading-relaxed">
-                        Across raters of different political leanings &mdash; left, neutral, and right &mdash; LLM-written notes had higher avg. %helpful ratings and lower avg. %unhelpful ratings than human-written notes, with the largest advantage among politically neutral raters (Figure 1). A linear mixed effects model controlling for raters' political ideology estimates a 10 percentage point increase in the probability of a note being rated helpful for LLM notes among centrist raters. This advantage also varies by topic: it is largest for health and medicine and conspiracy/pseudoscience and smallest for posts about AI-generated content (Figure 2).
+                        We retained ratings from people who evaluated every note on a given tweet, then recomputed note helpfulness scores using only these common-rater ratings. LLM notes achieved significantly higher helpfulness scores than human notes (0.21 vs. 0.18; adjusted <em>p</em> = 0.010).
                     </p>
                 </div>
                 <div class="bg-teal-50 rounded-lg p-5 border border-teal-100">
-                    <h3 class="font-semibold text-teal-900 mb-2 text-base">Equal-Exposure Note-Level Analysis Confirms LLM Advantage</h3>
+                    <h3 class="font-semibold text-teal-900 mb-2 text-base">LLM Notes Cite More and Higher-Quality Sources</h3>
                     <p class="text-gray-700 text-sm leading-relaxed">
-                        We equalized exposure by restricting to raters who evaluated every note on a given tweet, and then recomputed the note helpfulness scores with only ratings from these raters. While platform-generated helpfulness scores show no significant difference between LLM and human notes (0.25 vs. 0.24, linear mixed-effects model p = 0.253), under equal exposure, LLM notes achieved significantly higher helpfulness scores than human notes (0.21 vs. 0.18, linear mixed-effects model adj. p = 0.010).
+                        LLM notes cited more URLs than human notes (1.51 vs. 1.23 per note). Among citations matched to Media Bias/Fact Check, LLM-cited sources had higher average factual-reporting scores (3.478 vs. 3.207 on a 0&ndash;5 scale) and credibility scores (1.660 vs. 1.528 on a 0&ndash;2 scale), with both differences significant at <em>p</em> &lt; 0.001 (Figure 2).
+                    </p>
+                </div>
+                <div class="bg-teal-50 rounded-lg p-5 border border-teal-100">
+                    <h3 class="font-semibold text-teal-900 mb-2 text-base">Rater Tags Suggest Better Sourcing and More Neutral Language&mdash;with a Limitation</h3>
+                    <p class="text-gray-700 text-sm leading-relaxed">
+                        LLM notes received the helpful tags &ldquo;Good sources&rdquo; more often (58.2% vs. 51.2%) and &ldquo;Unbiased language&rdquo; more often (48.3% vs. 45.5%). They received the unhelpful tags &ldquo;Argumentative/biased&rdquo; less often (15.4% vs. 22.3%), &ldquo;Opinion/speculation&rdquo; less often (22.4% vs. 26.7%), and &ldquo;Missing/unreliable sources&rdquo; less often (21.8% vs. 26.5%). However, LLM notes received &ldquo;Note not needed&rdquo; more often (36.6% vs. 25.7%), often when the writer interpreted jokes, satire, or personal opinions too literally.
                     </p>
                 </div>
             </div>
@@ -122,14 +137,11 @@
                 </figcaption>
             </figure>
 
-            <!-- Figure: HTE by modality and topic (side by side) -->
+            <!-- Figure: Source quality -->
             <figure class="mb-10">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <img src="figures/hte_modality.png" alt="Heterogeneous treatment effects by tweet modality" class="w-full rounded-lg border border-gray-200 shadow-sm">
-                    <img src="figures/hte_topic.png" alt="Heterogeneous treatment effects by tweet topic" class="w-full rounded-lg border border-gray-200 shadow-sm">
-                </div>
+                <img src="figures/mbfc_distributions.png" alt="Distribution of Media Bias/Fact Check credibility and factual-reporting ratings for sources cited by LLM and human notes" class="w-full rounded-lg border border-gray-200 shadow-sm">
                 <figcaption class="text-sm text-gray-500 mt-3 text-center">
-                    <strong>Figure 2.</strong> LLM vs. human note rating advantage by tweet modality (left) and tweet topic category (right). Each panel displays the coefficient with 95% CI of the AI main effect from a linear mixed effects model rating_score ~ AI &times; coreRaterFactor1 + AI &times; (coreRaterFactor1)&sup2; + (1 | noteId) + (1 | raterId).
+                    <strong>Figure 2.</strong> Credibility and factual reporting of sources cited in LLM- and human-written notes. Bars show the percentage of MBFC-matched URLs in each category. LLM-cited sources are more concentrated in the highest credibility and factual-reporting categories.
                 </figcaption>
             </figure>
         </section>
@@ -168,7 +180,7 @@
         <!-- Contact -->
         <section id="contact" class="py-10 border-t border-gray-100">
             <h2 class="text-2xl font-bold text-gray-900 mb-2">Questions or Feedback?</h2>
-            <p class="text-gray-600 mb-6 text-sm">We are curious about your thoughts on this work. Leave your message below and it will be sent us.</p>
+            <p class="text-gray-600 mb-6 text-sm">We are curious about your thoughts on this work. Leave your message below and it will be sent to us.</p>
             <form action="https://formspree.io/f/mbdpwvye" method="POST" class="space-y-4 max-w-xl">
                 <div>
                     <label for="message" class="block text-sm font-medium text-gray-700 mb-1">Message <span class="text-red-500">*</span></label>
