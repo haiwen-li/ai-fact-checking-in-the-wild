@@ -1,41 +1,45 @@
 """
-Data processing pipeline for the maintenance note analysis.
+Data processing pipeline for the LLM vs. human Community Notes analysis.
 
 Handles:
-1. Identifying bot and human notes from raw Community Notes data
+1. Identifying bot (LLM) and human notes from raw Community Notes data
 2. Filtering ratings to relevant notes and raters
-3. Building equal-exposure (complete rater) subsets
+3. Building the common-rater ratings subset
+
+The raw Community Notes snapshot (cndata02032026/) is not distributed with
+this repository; replication starts from the pre-computed CSVs in data/
+(fast-start mode, the default). --no-fast-start rebuilds those CSVs from the
+raw snapshot and is only runnable if you download the snapshot yourself.
 
 Usage
 -----
-# Fast-start: load pre-computed CSVs from data/
+# Fast-start: load pre-computed CSVs from data/ and print a summary
 python process_data.py
 
 # Full run: process from raw Community Notes TSVs
 python process_data.py --no-fast-start
 
-# Build complete-rater ratings subset (for equal-exposure analysis)
-python process_data.py --complete-raters
-
+# Build complete_rater_ratings.csv (for the common-rater analysis)
+python process_data.py --common-raters
 """
 
 import argparse
+import json
 import os
 import sys
-import json
+
 import pandas as pd
 
-
 # =============================================================================
-# Configuration — edit these paths for your environment
+# Configuration
 # =============================================================================
 
-# Directory containing this script
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DATA_DIR = os.path.join(_SCRIPT_DIR, "data")
 
-# Raw Community Notes data from 02/03/2026 (download from https://communitynotes.x.com/guide/en/under-the-hood/download-data)
+# Raw Community Notes data snapshot from 02/03/2026
+# (download from https://communitynotes.x.com/guide/en/under-the-hood/download-data)
 CN_DATA_DIR = os.path.join(_SCRIPT_DIR, "cndata02032026")
 
 NOTES_TSV_PATH = os.path.join(CN_DATA_DIR, "notes-00000.tsv")
@@ -44,21 +48,21 @@ USER_ENROLLMENT_PATH = os.path.join(CN_DATA_DIR, "userEnrollment-00000.tsv")
 HELPFULNESS_SCORES_PATH = os.path.join(
     CN_DATA_DIR, "outputs", "helpfulness_scores.tsv"
 )
-SCORED_NOTES_PATH = os.path.join(CN_DATA_DIR,  "scored_notes.tsv")
+SCORED_NOTES_PATH = os.path.join(CN_DATA_DIR, "scored_notes.tsv")
 NOTE_STATUS_PATH = os.path.join(CN_DATA_DIR, "noteStatusHistory-00000.tsv")
 
-# All api retrieved tweet ids
+# All API-retrieved tweet IDs (posts targeted by the LLM writer)
 BOT_TWEET_IDS_PATH = os.path.join(DATA_DIR, "tids_api_retrieved.txt")
 
-# preprocessed data CSVs
+# Pre-processed CSVs (fast-start inputs)
 ALL_NOTES_PATH = os.path.join(DATA_DIR, "all_notes.csv")
 FILTERED_RATINGS_PATH = os.path.join(DATA_DIR, "filtered_ratings.csv")
 
+# Study window start: Nov 1, 2025 ET, in epoch milliseconds. Notes created
+# before this (and media notes) are excluded from all analyses.
+STUDY_START_MILLIS = 1761969600000
 
-# =============================================================================
 # Bot account identifiers
-# =============================================================================
-
 with open(os.path.join(DATA_DIR, "api_account_ids.json"), "r") as f:
     API_ACCOUNT_IDS = json.load(f)
 
@@ -66,6 +70,19 @@ with open(os.path.join(DATA_DIR, "api_account_ids.json"), "r") as f:
 # =============================================================================
 # 1. Data loading and preparation
 # =============================================================================
+
+
+def apply_note_filters(notes_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply the analysis-sample filters: no media notes, study window only."""
+    return notes_df[
+        (notes_df["isMediaNote"] == 0)
+        & (notes_df["createdAtMillis"] > STUDY_START_MILLIS)
+    ]
+
+
+def load_analysis_notes() -> pd.DataFrame:
+    """Load data/all_notes.csv with the analysis-sample filters applied."""
+    return apply_note_filters(pd.read_csv(ALL_NOTES_PATH))
 
 
 def prepare_and_load_data(fast_start: bool = True):
@@ -80,13 +97,12 @@ def prepare_and_load_data(fast_start: bool = True):
 
     Returns
     -------
-    tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
-        (notes_df, ratings_df, helpfulness_df)
+    tuple[pd.DataFrame, pd.DataFrame]
+        (notes_df, ratings_df)
     """
     if fast_start:
         return _load_precomputed()
-    else:
-        return _process_from_raw()
+    return _process_from_raw()
 
 
 def _load_precomputed():
@@ -100,12 +116,7 @@ def _load_precomputed():
         sys.exit(1)
 
     print(f"\nLoading notes from: {ALL_NOTES_PATH}")
-    notes_df = pd.read_csv(ALL_NOTES_PATH)
-
-    # Filter: exclude media notes, keep only notes after Nov 1, 2025 ET
-    notes_df = notes_df[
-        (notes_df["isMediaNote"] == 0) & (notes_df["createdAtMillis"] > 1761969600000)
-    ]
+    notes_df = load_analysis_notes()
 
     print(f"  Total notes: {len(notes_df):,}")
     print(f"  Bot notes: {(notes_df['writer'] == 'bot').sum():,}")
@@ -181,27 +192,45 @@ def _process_from_raw():
     print(f"\nHuman notes: {len(human_notes):,}")
     print(f"  Unique tweets: {human_notes['tweetId'].nunique():,}")
 
-    # --- Step 3: Combine and save ---
+    # --- Step 3: Combine with note scores and status, save ---
     all_notes = pd.concat([bot_notes, human_notes])
     print(
         f"\nCombined: {len(all_notes):,} notes, {all_notes['tweetId'].nunique():,} tweets"
     )
-    
-    scored_notes = pd.read_csv(SCORED_NOTES_PATH, sep = "\t",
-                              dtype={"noteId": "Int64"},
-                              low_memory=False)
-    all_notes = all_notes.merge(scored_notes[
-        ['noteId', 'finalRatingStatus', 'numRatings', 'coreNoteIntercept',
-         'coreNoteFactor1']], on="noteId", how="left")
-    
-    # --- Step 4: Add timestampMillisOfLatestNonNMRStatus ---
+
+    scored_notes = pd.read_csv(
+        SCORED_NOTES_PATH, sep="\t", dtype={"noteId": "Int64"}, low_memory=False
+    )
+    all_notes = all_notes.merge(
+        scored_notes[
+            [
+                "noteId",
+                "finalRatingStatus",
+                "numRatings",
+                "coreNoteIntercept",
+                "coreNoteFactor1",
+            ]
+        ],
+        on="noteId",
+        how="left",
+    )
+
     print("\nLoading note status history...")
     note_status_history = pd.read_csv(NOTE_STATUS_PATH, sep="\t", low_memory=False)
-    all_notes = all_notes.merge(note_status_history[['noteId','timestampMillisOfCurrentStatus', 'timestampMillisOfLatestNonNMRStatus']], on="noteId", how="left")
+    all_notes = all_notes.merge(
+        note_status_history[
+            [
+                "noteId",
+                "timestampMillisOfCurrentStatus",
+                "timestampMillisOfLatestNonNMRStatus",
+            ]
+        ],
+        on="noteId",
+        how="left",
+    )
 
-    notes_output_path = os.path.join(DATA_DIR, "all_notes.csv")
-    all_notes.to_csv(notes_output_path, index=False)
-    print(f"Saved notes to: {notes_output_path}")
+    all_notes.to_csv(ALL_NOTES_PATH, index=False)
+    print(f"Saved notes to: {ALL_NOTES_PATH}")
 
     # --- Step 4: Load and filter ratings ---
     print("\n" + "=" * 80)
@@ -229,7 +258,6 @@ def _process_from_raw():
         file_path = os.path.join(RATINGS_DIR, file)
         print(f"  Processing {file}...")
         ratings_chunk = pd.read_csv(file_path, sep="\t", low_memory=False)
-        # Filter to relevant notes and raters
         ratings_chunk = ratings_chunk[
             (ratings_chunk["noteId"].isin(notes_ids))
             & (ratings_chunk["raterParticipantId"].isin(raters_ids))
@@ -238,56 +266,63 @@ def _process_from_raw():
 
     ratings_df = pd.concat(all_ratings, ignore_index=True)
     print(f"\nTotal ratings: {len(ratings_df):,}")
-    
-    # add rater factor1 and intercept
-    ratings_df = ratings_df.merge(helpfulness_df[['raterParticipantId', 'coreRaterFactor1', 'coreRaterIntercept']], on="raterParticipantId", how="left")
 
-    ratings_output_path = os.path.join(DATA_DIR, "filtered_ratings.csv")
-    ratings_df.to_csv(ratings_output_path, index=False)
-    print(f"Saved filtered ratings to: {ratings_output_path}")
-    
-    
-    # prepare data for rating-level mixed effects analysis
-    # Apply same filters as fast-start: exclude media notes and pre-Nov 1 2025
-    notes_filtered = all_notes[
-        (all_notes["isMediaNote"] == 0) & (all_notes["createdAtMillis"] > 1761969600000)
-    ]
+    ratings_df = ratings_df.merge(
+        helpfulness_df[["raterParticipantId", "coreRaterFactor1", "coreRaterIntercept"]],
+        on="raterParticipantId",
+        how="left",
+    )
+
+    ratings_df.to_csv(FILTERED_RATINGS_PATH, index=False)
+    print(f"Saved filtered ratings to: {FILTERED_RATINGS_PATH}")
+
+    # --- Step 5: Rating-level analysis dataset (for the mixed models) ---
+    notes_filtered = apply_note_filters(all_notes)
     filtered_note_ids = notes_filtered["noteId"].unique()
 
-    ratings_w_rater_factors = ratings_df[ratings_df["noteId"].isin(filtered_note_ids)].dropna(subset=["coreRaterFactor1"])
+    ratings_w_rater_factors = ratings_df[
+        ratings_df["noteId"].isin(filtered_note_ids)
+    ].dropna(subset=["coreRaterFactor1"])
     print(f"Ratings with rater factors: {len(ratings_w_rater_factors):,}")
 
     notes_cols = ["noteId", "writer"]
     if "tweetId" not in ratings_w_rater_factors.columns:
         notes_cols.append("tweetId")
-    ratings_analysis_df = ratings_w_rater_factors.merge(notes_filtered[notes_cols], on="noteId", how="inner")
+    ratings_analysis_df = ratings_w_rater_factors.merge(
+        notes_filtered[notes_cols], on="noteId", how="inner"
+    )
 
     ratings_analysis_df["AI"] = (ratings_analysis_df["writer"] == "bot").astype(int)
-    ratings_analysis_df["abs_coreRaterFactor1"] = ratings_analysis_df["coreRaterFactor1"].abs()
+    ratings_analysis_df["abs_coreRaterFactor1"] = ratings_analysis_df[
+        "coreRaterFactor1"
+    ].abs()
 
     score_map = {"HELPFUL": 1.0, "SOMEWHAT_HELPFUL": 0.5, "NOT_HELPFUL": 0.0}
-    ratings_analysis_df["rating_score"] = ratings_analysis_df["helpfulnessLevel"].map(score_map)
+    ratings_analysis_df["rating_score"] = ratings_analysis_df["helpfulnessLevel"].map(
+        score_map
+    )
     ratings_analysis_df = ratings_analysis_df.dropna(subset=["rating_score"])
 
-    # Save analysis data
-    ratings_analysis_df.to_csv(os.path.join(DATA_DIR, "ratings_analysis_df.csv"), index=False)
-    print(f"Saved analysis data to: {os.path.join(DATA_DIR, 'ratings_analysis_df.csv')}")
+    out_path = os.path.join(DATA_DIR, "ratings_analysis_df.csv")
+    ratings_analysis_df.to_csv(out_path, index=False)
+    print(f"Saved analysis data to: {out_path}")
 
     return all_notes, ratings_df
 
 
 # =============================================================================
-# 2. Complete-rater filtering (equal-exposure subset)
+# 2. Common-rater filtering
 # =============================================================================
 
 
-def filter_to_complete_raters(
+def filter_to_common_raters(
     ratings_df: pd.DataFrame,
     notes_df: pd.DataFrame,
+    output_filename: str = "complete_rater_ratings.csv",
 ) -> pd.DataFrame:
     """
-    For each tweet, identify "complete raters" who rated ALL notes on that tweet.
-    Restricts to tweets with at least one human note.
+    For each tweet, identify "common raters" who rated ALL notes on that
+    tweet. Restricts to tweets with at least one human note.
 
     Parameters
     ----------
@@ -299,7 +334,7 @@ def filter_to_complete_raters(
     Returns
     -------
     pd.DataFrame
-        Filtered ratings from complete raters only.
+        Filtered ratings from common raters only.
     """
     # Restrict to tweets with at least one human note
     tweets_with_human = notes_df[notes_df["writer"] == "human"]["tweetId"].unique()
@@ -328,49 +363,75 @@ def filter_to_complete_raters(
         .rename(columns={"noteId": "n_notes_rated"})
     )
 
-    # Find complete raters
+    # Find common raters
     rater_tweet_stats = ratings_per_rater_tweet.merge(
         notes_per_tweet, on="tweetId", how="inner"
     )
-    complete_rater_tweets = rater_tweet_stats[
+    common_rater_tweets = rater_tweet_stats[
         rater_tweet_stats["n_notes_rated"] == rater_tweet_stats["n_notes_on_tweet"]
     ][["tweetId", "raterParticipantId"]]
 
     # Filter ratings
     ratings_filtered = ratings_with_tweet.merge(
-        complete_rater_tweets,
+        common_rater_tweets,
         on=["tweetId", "raterParticipantId"],
         how="inner",
     )
-    
-    # Save complete-rater ratings, used for recalculate noteParams.tsv
-    complete_rater_ratings_path = os.path.join(DATA_DIR, "complete_rater_ratings.csv")
-    ratings_filtered.to_csv(complete_rater_ratings_path, index=False)
-    print(f"\nSaved complete-rater ratings to: {complete_rater_ratings_path}")
+
+    # Save common-rater ratings (input for recomputing noteParams.tsv)
+    common_rater_ratings_path = os.path.join(DATA_DIR, output_filename)
+    ratings_filtered.to_csv(common_rater_ratings_path, index=False)
+    print(f"\nSaved common-rater ratings to: {common_rater_ratings_path}")
 
     return ratings_filtered
 
+
 def precompute_human_crh_hit_rate():
-    notes = pd.read_csv(NOTES_TSV_PATH, sep = "\t",
-                        dtype={"noteId": "Int64", "tweetId": "Int64"},
-                        low_memory=False)
-    user_enrollment = pd.read_csv(USER_ENROLLMENT_PATH, sep = "\t", low_memory=False)
-    scored_notes = pd.read_csv(SCORED_NOTES_PATH, sep = "\t",
-                              dtype={"noteId": "Int64"},
-                              low_memory=False)
-    notes = notes.merge(scored_notes[['noteId', 'finalRatingStatus']], on="noteId", how="left")
+    """
+    Per-author CRH/CRNH counts for ALL human Community Notes writers, used by
+    the writer-percentile benchmarking in analysis.py (Appendix B). Requires
+    the raw snapshot (cndata02032026/); the output, data/human_crh_hit_rate.csv,
+    is distributed with the repository.
+    """
+    notes = pd.read_csv(
+        NOTES_TSV_PATH,
+        sep="\t",
+        dtype={"noteId": "Int64", "tweetId": "Int64"},
+        low_memory=False,
+    )
+    user_enrollment = pd.read_csv(USER_ENROLLMENT_PATH, sep="\t", low_memory=False)
+    scored_notes = pd.read_csv(
+        SCORED_NOTES_PATH, sep="\t", dtype={"noteId": "Int64"}, low_memory=False
+    )
+    notes = notes.merge(
+        scored_notes[["noteId", "finalRatingStatus"]], on="noteId", how="left"
+    )
     notes = notes.dropna(subset=["finalRatingStatus"])
-    human_users = user_enrollment[user_enrollment["enrollmentState"] != "apiEarnedIn"]["participantId"].unique()
-    
+    human_users = user_enrollment[
+        user_enrollment["enrollmentState"] != "apiEarnedIn"
+    ]["participantId"].unique()
+
     human_notes = notes[notes["noteAuthorParticipantId"].isin(human_users)]
-    stats = human_notes.groupby("noteAuthorParticipantId").agg(
-        n_total=("noteId", "count"),
-        n_crh=("finalRatingStatus", lambda s: (s == "CURRENTLY_RATED_HELPFUL").sum()),
-        n_crnh=("finalRatingStatus", lambda s: (s == "CURRENTLY_RATED_NOT_HELPFUL").sum()),
-    ).reset_index().rename(columns={"noteAuthorParticipantId": "participantId"})
-    
-    stats.to_csv(os.path.join(DATA_DIR, "human_crh_hit_rate.csv"), index=False)
-    print(f"Saved human CRH hit rate to: {os.path.join(DATA_DIR, "human_crh_hit_rate.csv")}")
+    author_stats = (
+        human_notes.groupby("noteAuthorParticipantId")
+        .agg(
+            n_total=("noteId", "count"),
+            n_crh=(
+                "finalRatingStatus",
+                lambda s: (s == "CURRENTLY_RATED_HELPFUL").sum(),
+            ),
+            n_crnh=(
+                "finalRatingStatus",
+                lambda s: (s == "CURRENTLY_RATED_NOT_HELPFUL").sum(),
+            ),
+        )
+        .reset_index()
+        .rename(columns={"noteAuthorParticipantId": "participantId"})
+    )
+
+    out_path = os.path.join(DATA_DIR, "human_crh_hit_rate.csv")
+    author_stats.to_csv(out_path, index=False)
+    print(f"Saved human CRH hit rate to: {out_path}")
 
 
 # =============================================================================
@@ -380,32 +441,37 @@ def precompute_human_crh_hit_rate():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Data processing pipeline for maintenance note analysis"
+        description="Data processing pipeline for the LLM vs. human notes analysis"
     )
     parser.add_argument(
         "--no-fast-start",
         action="store_true",
-        help="Process from raw Community Notes TSVs (slower)",
+        help="Process from raw Community Notes TSVs (requires the raw snapshot)",
     )
     parser.add_argument(
-        "--complete-raters",
+        "--common-raters",
         action="store_true",
-        help="Build complete_rater_ratings.csv (equal-exposure subset)",
+        help="Build complete_rater_ratings.csv",
+    )
+    parser.add_argument(
+        "--human-crh-hit-rate",
+        action="store_true",
+        help="Rebuild data/human_crh_hit_rate.csv (requires the raw snapshot)",
     )
     args = parser.parse_args()
 
-    notes_df, ratings_df = prepare_and_load_data(
-        fast_start=not args.no_fast_start
-    )
+    notes_df, ratings_df = prepare_and_load_data(fast_start=not args.no_fast_start)
 
-    if args.complete_raters:
-        print("\nFiltering to complete raters...")
-        ratings_filtered = filter_to_complete_raters(ratings_df, notes_df)
+    if args.common_raters:
+        print("\nFiltering to common raters...")
+        ratings_filtered = filter_to_common_raters(ratings_df, notes_df)
         print(f"  Total ratings: {len(ratings_filtered):,}")
         print(f"  Unique notes: {ratings_filtered['noteId'].nunique():,}")
         print(f"  Unique raters: {ratings_filtered['raterParticipantId'].nunique():,}")
 
-    # Default: just load and print summary
+    if args.human_crh_hit_rate:
+        precompute_human_crh_hit_rate()
+
     print("\nData loaded successfully.")
     print(f"  Notes: {len(notes_df):,}")
     print(f"  Ratings: {len(ratings_df):,}")

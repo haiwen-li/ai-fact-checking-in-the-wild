@@ -1,29 +1,28 @@
 """
-Analysis script
+Main analysis script.
 
-Runs all analyses to replicate results reported in the paper:
-- Descriptive statistics
-- Platform timing & exposure comparison 
-- Rating-level descriptive means by ideology group 
-- Equal-exposure note-level analysis 
-- Writing and source analysis 
-- Within-rater pairwise Bradley-Terry (Appendix A)
-- Full-sample note-level outcomes (Appendix B)
-- Robustness checks: numRatings >= 30 and timing-matched (Appendix C)
-- Representativeness of complete raters (Appendix D)
+Replicates the paper results that do not come from the R mixed models or
+from a dedicated script (MBFC: source_quality_analysis.py; rater tags:
+rater_tags_analysis.py; topic distributions: topic_distribution.py):
+
+Results are written into the shared report, outputs/analysis_report.md
+(see report_utils.py); each analysis updates its own section.
 
 Usage
 -----
-# Run all analyses
+# Run all default analyses
 python analysis.py
 
 # Run specific analyses
-python analysis.py --analysis rating note timing text crh timing_matched pairwise_bt
+python analysis.py --analysis rating note timing_matched win_rate text pairwise_bt
 
-# Equal-exposure analyses (complete raters)
-python analysis.py --analyze-with-complete-raters
+# Both-note-posts replication
+python analysis.py --both-notes-only
 
-# Rater distribution comparison (Appendix D)
+# common-rater analyses 
+python analysis.py --analyze-with-common-raters
+
+# Rater distribution comparison
 python analysis.py --rater-distribution
 """
 
@@ -42,12 +41,11 @@ from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import proportions_ztest
 
 from process_data import (
-    filter_to_complete_raters,
+    filter_to_common_raters,
+    load_analysis_notes,
     prepare_and_load_data,
 )
-
-OUTPUT_DIR = "outputs"
-DATA_DIR = "data"
+from report_utils import DATA_DIR, OUTPUT_DIR, update_report_section
 
 
 # =============================================================================
@@ -63,19 +61,12 @@ def _report(msg: str = ""):
     _REPORT_LINES.append(msg)
 
 
-def clear_report():
-    """Clear the report buffer."""
+def _flush_section(section_id: str):
+    """Write the buffered report lines into their section and clear the buffer."""
     global _REPORT_LINES
+    path = update_report_section(section_id, _REPORT_LINES)
     _REPORT_LINES = []
-
-
-def write_analysis_report(path: str | None = None) -> str:
-    """Write accumulated report text to a .md file."""
-    if path is None:
-        path = os.path.join(OUTPUT_DIR, "analysis_report.md")
-    with open(path, "w") as f:
-        f.write("\n".join(_REPORT_LINES))
-    return path
+    print(f"\n[section '{section_id}' updated in {path}]")
 
 
 # =============================================================================
@@ -277,7 +268,7 @@ def human_bot_timing_analysis(notes_df: pd.DataFrame):
     For tweets with both bot and human notes, compute what percentage of
     human notes were created before vs after the first bot note.
     """
-    _report("## Human vs Bot note timing (createdAtMillis)")
+    _report("### Human vs LLM note timing (createdAtMillis)")
     _report("")
 
     notes_with_ts = notes_df.dropna(subset=["createdAtMillis"]).copy()
@@ -344,36 +335,21 @@ def human_bot_timing_analysis(notes_df: pd.DataFrame):
 # =============================================================================
 
 
+def _assign_rater_bucket(factor: float) -> str:
+    if factor < -0.15:
+        return "left"
+    elif factor > 0.15:
+        return "right"
+    else:
+        return "neutral"
 
 
-def rating_analysis_by_bucket(ratings_analysis_df_path: str = "data/ratings_analysis_df.csv", 
-                              plot_suffix: str = ""):
+def _note_bucket_stats(ratings_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute per-note and aggregated % helpful / % not helpful by
-    writer x rater_bucket, with 95% confidence intervals.
+    Per-note x rater-ideology-bucket rating counts and helpfulness stats.
+    Expects ratings_df to already have "writer", "rater_bucket",
+    "helpfulnessLevel", and "rating_score" columns.
     """
-    sfx = f"_{plot_suffix}" if plot_suffix else ""
-    _report(
-        "## Analysis by rater bucket and writer"
-        + (f" ({plot_suffix})" if plot_suffix else "")
-    )
-    _report("")
-
-    ratings_df = pd.read_csv(ratings_analysis_df_path)
-    print(f"Ratings analysis df: {ratings_df.shape}")
-    def assign_rater_bucket(factor: float) -> str:
-        if factor < -0.15:
-            return "left"
-        elif factor > 0.15:
-            return "right"
-        else:
-            return "neutral"
-
-    ratings_df["rater_bucket"] = ratings_df["coreRaterFactor1"].apply(
-        assign_rater_bucket
-    )
-
-    # Per-note x bucket statistics
     note_bucket_stats = []
     for note_id, note_group in ratings_df.groupby("noteId"):
         writer = note_group["writer"].iloc[0]
@@ -399,8 +375,105 @@ def rating_analysis_by_bucket(ratings_analysis_df_path: str = "data/ratings_anal
                     "mean_score": bucket_ratings["rating_score"].mean(),
                 }
             )
+    return pd.DataFrame(note_bucket_stats)
 
-    note_bucket_df = pd.DataFrame(note_bucket_stats)
+
+def rating_counts_by_bucket_analysis(note_ids, context_label: str):
+    """
+    Compare the number of ratings received from each rater-ideology bucket
+    (left/neutral/right) between AI and human notes, within a given note
+    subset (e.g. an exposure-matched window from timing_matched_analysis).
+    """
+    _report(f"\n#### Ratings received by rater ideology bucket ({context_label})")
+    _report("")
+
+    ratings_df = pd.read_csv(os.path.join(DATA_DIR, "ratings_analysis_df.csv"))
+    ratings_df = ratings_df[ratings_df["noteId"].astype(str).isin(note_ids)].copy()
+    if ratings_df.empty:
+        _report("  (no ratings in this subset)")
+        _report("")
+        return
+
+    ratings_df["rater_bucket"] = ratings_df["coreRaterFactor1"].apply(
+        _assign_rater_bucket
+    )
+    note_bucket_df = _note_bucket_stats(ratings_df)
+    if note_bucket_df.empty:
+        _report("  (no bucketed ratings)")
+        _report("")
+        return
+
+    for bucket in ["left", "neutral", "right"]:
+        bucket_data = note_bucket_df[note_bucket_df["rater_bucket"] == bucket]
+        bot_counts = bucket_data[bucket_data["writer"] == "bot"]["total_ratings"]
+        human_counts = bucket_data[bucket_data["writer"] == "human"]["total_ratings"]
+        _report(
+            f"  {bucket.capitalize()}: n_bot_notes={len(bot_counts)}, "
+            f"n_human_notes={len(human_counts)}"
+        )
+        if len(bot_counts) == 0 or len(human_counts) == 0:
+            _report("    (insufficient data)")
+            continue
+        _report(
+            f"    ratings/note: mean Bot={bot_counts.mean():.2f}  "
+            f"Human={human_counts.mean():.2f}  |  "
+            f"median Bot={bot_counts.median():.1f}  Human={human_counts.median():.1f}"
+        )
+        if len(bot_counts) > 1 and len(human_counts) > 1:
+            try:
+                u_stat, u_p = stats.mannwhitneyu(
+                    bot_counts, human_counts, alternative="two-sided"
+                )
+                _report(f"    Mann-Whitney U: U={u_stat:.2f}, p={u_p:.6f}")
+            except ValueError:
+                pass
+    _report("")
+
+
+def rating_analysis_by_bucket(
+    both_writers_only: bool = False,
+    save_figure: bool = True,
+):
+    """
+    Compute per-note and aggregated % helpful / % not helpful by
+    writer x rater_bucket, with 95% confidence intervals.
+
+    If both_writers_only is True, restrict to tweets that have BOTH at least
+    one LLM (bot) note and at least one human note.
+    """
+    _report(
+        "### Ratings by rater ideology bucket"
+        + (" (both-note posts)" if both_writers_only else "")
+    )
+    _report("")
+
+    ratings_df = pd.read_csv(os.path.join(DATA_DIR, "ratings_analysis_df.csv"))
+    print(f"Ratings analysis df: {ratings_df.shape}")
+
+    if both_writers_only:
+        notes_all = load_analysis_notes()
+        bot_tweets = set(notes_all[notes_all["writer"] == "bot"]["tweetId"].astype(str))
+        human_tweets = set(
+            notes_all[notes_all["writer"] == "human"]["tweetId"].astype(str)
+        )
+        both_tweets = bot_tweets & human_tweets
+        n_before = len(ratings_df)
+        ratings_df = ratings_df[
+            ratings_df["tweetId"].astype(str).isin(both_tweets)
+        ].copy()
+        _report(
+            f"Restricted to tweets with both LLM and human notes: "
+            f"{len(both_tweets):,} tweets, "
+            f"{len(ratings_df):,}/{n_before:,} ratings retained"
+        )
+        _report("")
+        print(f"Ratings analysis df (both writers only): {ratings_df.shape}")
+
+    ratings_df["rater_bucket"] = ratings_df["coreRaterFactor1"].apply(
+        _assign_rater_bucket
+    )
+
+    note_bucket_df = _note_bucket_stats(ratings_df)
     if note_bucket_df.empty:
         _report("  No per-note bucket stats.")
         return note_bucket_df, pd.DataFrame()
@@ -478,7 +551,11 @@ def rating_analysis_by_bucket(ratings_analysis_df_path: str = "data/ratings_anal
                 f"(n={int(row['num_notes'])}, CI={ci_str})"
             )
 
-    # Save grouped bar chart
+    # Save grouped bar chart (paper Figure 1)
+    if not save_figure:
+        _report("")
+        return note_bucket_df, writer_bucket_summary
+
     bar_buckets = ["left", "neutral", "right"]
     bar_bucket_labels = ["Left-leaning", "Neutral", "Right-leaning"]
     bar_width = 0.18
@@ -575,9 +652,7 @@ def rating_analysis_by_bucket(ratings_analysis_df_path: str = "data/ratings_anal
     ax.legend(loc="upper right", fontsize=10)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
     plt.tight_layout()
-    fig_path = os.path.join(
-        OUTPUT_DIR, f"rating_analysis_bot_vs_human_barchart{sfx}.png"
-    )
+    fig_path = os.path.join(OUTPUT_DIR, "rating_analysis_llm_vs_human_barchart.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     _report(f"\nSaved bar chart: {fig_path}")
@@ -587,7 +662,7 @@ def rating_analysis_by_bucket(ratings_analysis_df_path: str = "data/ratings_anal
 
 
 # =============================================================================
-# Appendix B: Full-sample note-level outcomes + Appendix C (>=30 ratings)
+# Full-sample note-level outcomes
 # =============================================================================
 
 
@@ -598,11 +673,10 @@ def note_level_analysis(notes_df: pd.DataFrame, plot_suffix: str = ""):
     - coreNoteIntercept (helpfulness score)
     - numRatings
     - Time to CRH (hours) among CRH notes
-    - Subset: numRatings >= 30 (Appendix C robustness)
     """
     
     _report(
-        "## Note-level analysis: bot vs human"
+        "### Note-level analysis: LLM vs human"
         + (f" ({plot_suffix})" if plot_suffix else "")
     )
     _report("")
@@ -682,7 +756,7 @@ def note_level_analysis(notes_df: pd.DataFrame, plot_suffix: str = ""):
             f"  {sr['status_name']}: Bot={sr['bot_rate']:.2f}%  Human={sr['human_rate']:.2f}%"
         )
 
-    # LMMs (unadjusted p-values; BH correction only in complete-rater analysis)
+    # LMMs (unadjusted p-values; BH correction only in common-rater analysis)
     context_label = plot_suffix if plot_suffix else "Full sample"
     res_crh = _run_status_binary_lmm(
         notes_df, "finalRatingStatus", "CURRENTLY_RATED_HELPFUL", context_label
@@ -709,99 +783,92 @@ def note_level_analysis(notes_df: pd.DataFrame, plot_suffix: str = ""):
     _report("\n--- Time to CRH (hours) among CRH notes ---")
     _report_two_sample(res_time, primary_test="u", skip_t=True)
 
-    # --- Subset: numRatings >= 30 (Appendix C) ---
-    skip_subset = plot_suffix and plot_suffix.startswith("timing_")
-    if not skip_subset:
-        _report("\n### Subset: notes with numRatings >= 30 (exploratory, unadjusted)")
-        notes_subset = notes_df[notes_df["numRatings"] >= 30]
-        _report(
-            f"Notes with numRatings >= 30: {len(notes_subset):,} "
-            f"(bot: {(notes_subset['writer'] == 'bot').sum():,}, "
-            f"human: {(notes_subset['writer'] == 'human').sum():,})"
-        )
-
-        if len(notes_subset) > 0:
-            _report("\nFinal rating status distribution:")
-            status_cross_sub = pd.crosstab(
-                notes_subset["writer"],
-                notes_subset["finalRatingStatus"],
-                margins=True,
-            )
-            _report("```")
-            _report(status_cross_sub.to_string())
-            _report("```")
-
-            for status_name, status_val in [
-                ("%CRH", "CURRENTLY_RATED_HELPFUL"),
-                ("%CRNH", "CURRENTLY_RATED_NOT_HELPFUL"),
-            ]:
-                bot_n = notes_subset[notes_subset["writer"] == "bot"]
-                human_n = notes_subset[notes_subset["writer"] == "human"]
-                bot_rate = (
-                    (bot_n["finalRatingStatus"] == status_val).mean() * 100
-                    if len(bot_n)
-                    else np.nan
-                )
-                human_rate = (
-                    (human_n["finalRatingStatus"] == status_val).mean() * 100
-                    if len(human_n)
-                    else np.nan
-                )
-                _report(
-                    f"  {status_name}: Bot={bot_rate:.2f}%  Human={human_rate:.2f}%"
-                )
-
-            # LMMs (exploratory, no BH)
-            res_crh_sub = _run_status_binary_lmm(
-                notes_subset,
-                "finalRatingStatus",
-                "CURRENTLY_RATED_HELPFUL",
-                "numRatings>=30",
-            )
-            res_crnh_sub = _run_status_binary_lmm(
-                notes_subset,
-                "finalRatingStatus",
-                "CURRENTLY_RATED_NOT_HELPFUL",
-                "numRatings>=30",
-            )
-            res_help_sub = _run_note_intercept_lmm(
-                notes_subset, "coreNoteIntercept", "numRatings>=30"
-            )
-            _report_lmm_result("CRH", res_crh_sub, "numRatings>=30", None)
-            _report_lmm_result("CRNH", res_crnh_sub, "numRatings>=30", None)
-
-            _report("\n--- coreNoteIntercept ---")
-            res = _two_sample_tests(
-                notes_subset, "coreNoteIntercept", "coreNoteIntercept"
-            )
-            _report_two_sample(res, skip_t=True)
-            _report_lmm_result("Note intercept", res_help_sub, "numRatings>=30", None)
-
-            _report("\n--- numRatings ---")
-            res = _two_sample_tests(notes_subset, "numRatings", "numRatings")
-            _report_two_sample(res, primary_test="u", skip_t=True)
-
-            crh_notes_sub = notes_subset[
-                notes_subset["finalRatingStatus"] == "CURRENTLY_RATED_HELPFUL"
-            ]
-            crh_notes_sub = crh_notes_sub[
-                crh_notes_sub["timestampMillisOfLatestNonNMRStatus"].notna()
-                & crh_notes_sub["createdAtMillis"].notna()
-            ]
-            crh_notes_sub["time_to_crh_hours"] = (
-                crh_notes_sub["timestampMillisOfLatestNonNMRStatus"]
-                - crh_notes_sub["createdAtMillis"]
-            ) / 3.6e6
-            _report("\n--- Time to CRH (hours) among CRH notes ---")
-            res = _two_sample_tests(
-                crh_notes_sub, "time_to_crh_hours", "time_to_crh_hours"
-            )
-            _report_two_sample(res, primary_test="u", skip_t=True)
     _report("")
 
 
 # =============================================================================
-# Appendix C: Timing-matched robustness
+# Sensitivity to minimum-rating thresholds
+# =============================================================================
+
+THRESHOLDS = [10, 30, 50]
+
+
+def thresholds_analysis(notes_df: pd.DataFrame):
+    """
+    Note-level comparison (CRH rate, CRNH rate, helpfulness score, numRatings,
+    time to CRH) restricted to notes with at least 10 / 30 / 50 ratings.
+    """
+    _report("### Sensitivity to minimum rating thresholds")
+    _report("")
+    for t in THRESHOLDS:
+        subset = notes_df[notes_df["numRatings"] >= t]
+        n_bot = (subset["writer"] == "bot").sum()
+        n_human = (subset["writer"] == "human").sum()
+        _report(f"\n#### numRatings >= {t}")
+        _report(
+            f"Notes retained: {len(subset):,} "
+            f"(bot: {n_bot:,}/{(notes_df['writer'] == 'bot').sum():,}, "
+            f"human: {n_human:,}/{(notes_df['writer'] == 'human').sum():,})"
+        )
+        if len(subset) == 0:
+            continue
+
+        for status_name, status_val in [
+            ("%CRH", "CURRENTLY_RATED_HELPFUL"),
+            ("%CRNH", "CURRENTLY_RATED_NOT_HELPFUL"),
+        ]:
+            bot_n = subset[subset["writer"] == "bot"]
+            human_n = subset[subset["writer"] == "human"]
+            bot_rate = (
+                (bot_n["finalRatingStatus"] == status_val).mean() * 100
+                if len(bot_n)
+                else np.nan
+            )
+            human_rate = (
+                (human_n["finalRatingStatus"] == status_val).mean() * 100
+                if len(human_n)
+                else np.nan
+            )
+            _report(f"  {status_name}: Bot={bot_rate:.2f}%  Human={human_rate:.2f}%")
+
+        label = f"numRatings>={t}"
+        res_crh = _run_status_binary_lmm(
+            subset, "finalRatingStatus", "CURRENTLY_RATED_HELPFUL", label
+        )
+        res_crnh = _run_status_binary_lmm(
+            subset, "finalRatingStatus", "CURRENTLY_RATED_NOT_HELPFUL", label
+        )
+        res_help = _run_note_intercept_lmm(subset, "coreNoteIntercept", label)
+        _report_lmm_result("CRH", res_crh, label, None)
+        _report_lmm_result("CRNH", res_crnh, label, None)
+
+        _report("\n--- coreNoteIntercept ---")
+        res = _two_sample_tests(subset, "coreNoteIntercept", "coreNoteIntercept")
+        _report_two_sample(res, skip_t=True)
+        _report_lmm_result("Note intercept", res_help, label, None)
+
+        _report("\n--- numRatings ---")
+        res = _two_sample_tests(subset, "numRatings", "numRatings")
+        _report_two_sample(res, primary_test="u", skip_t=True)
+
+        crh_notes = subset[subset["finalRatingStatus"] == "CURRENTLY_RATED_HELPFUL"]
+        crh_notes = crh_notes[
+            crh_notes["timestampMillisOfLatestNonNMRStatus"].notna()
+            & crh_notes["createdAtMillis"].notna()
+        ].copy()
+        crh_notes["time_to_crh_hours"] = (
+            crh_notes["timestampMillisOfLatestNonNMRStatus"]
+            - crh_notes["createdAtMillis"]
+        ) / 3.6e6
+        _report("\n--- Time to CRH (hours) among CRH notes ---")
+        res = _two_sample_tests(crh_notes, "time_to_crh_hours", "time_to_crh_hours")
+        _report_two_sample(res, primary_test="u", skip_t=True)
+
+    _report("")
+
+
+# =============================================================================
+# Timing-matched robustness
 # =============================================================================
 
 
@@ -810,7 +877,7 @@ def timing_matched_analysis(notes_df: pd.DataFrame):
     For each bot note, find human notes on the same tweet within
     +/- 30 / 60 / 90 minutes. Run note_level_analysis on matched subsets.
     """
-    _report("## Timing-matched analysis")
+    _report("### Creation-time-matched subsets")
     _report("")
 
     notes_with_ts = notes_df.dropna(subset=["createdAtMillis"]).copy()
@@ -857,7 +924,99 @@ def timing_matched_analysis(notes_df: pd.DataFrame):
             )
             subset_notes = notes_df[notes_df["noteId"].isin(subset_ids)].copy()
             note_level_analysis(subset_notes, plot_suffix=f"timing_{w}min")
+            rating_counts_by_bucket_analysis(
+                set(subset_ids.astype(str)), context_label=f"+/-{w} min window"
+            )
 
+    _report("")
+
+
+# =============================================================================
+# Within-post pairwise comparison of note helpfulness scores
+# =============================================================================
+
+
+def _binom_ci(k: int, n: int) -> tuple:
+    """Wilson score interval."""
+    if n == 0:
+        return (np.nan, np.nan)
+    z = 1.959963985
+    p = k / n
+    denom = 1 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / denom
+    half = z * np.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
+    return (centre - half, centre + half)
+
+
+def _build_matched_pairs(notes: pd.DataFrame) -> pd.DataFrame:
+    """Enumerate every (LLM note, human note) pair on the same post."""
+    n = notes.dropna(subset=["createdAtMillis"]).copy()
+    bot = n[n["writer"] == "bot"]
+    hum = n[n["writer"] == "human"]
+    cols = ["noteId", "createdAtMillis", "coreNoteIntercept"]
+    return bot[["tweetId"] + cols].merge(
+        hum[["tweetId"] + cols], on="tweetId", suffixes=("_bot", "_human")
+    )
+
+
+def win_rate_analysis(notes_df: pd.DataFrame):
+    """
+    Appendix: on posts carrying both an LLM and a human note, how often does
+    the LLM note end up with the higher platform helpfulness score
+    (coreNoteIntercept)? Reports both a pair-level win rate (every LLM-human
+    combination on a post counts once) and a post-weighted win rate (each
+    pair weighted by 1/(pairs on that post), so every post counts once).
+    """
+    _report(
+        "A 'win' means the LLM note has the higher `coreNoteIntercept`. Notes "
+        "the scorer never assigned an intercept to (too few ratings) are "
+        "excluded."
+    )
+    _report("")
+
+    pairs_all = _build_matched_pairs(notes_df)
+    usable = pairs_all.dropna(
+        subset=["coreNoteIntercept_bot", "coreNoteIntercept_human"]
+    )
+    diff = usable["coreNoteIntercept_bot"] - usable["coreNoteIntercept_human"]
+    wins = int((diff > 0).sum())
+    n = len(usable)
+    lo, hi = _binom_ci(wins, n)
+
+    _report("### Pair-level win rate")
+    _report("")
+    _report(
+        f"Scored pairs: {n:,} on {usable['tweetId'].nunique():,} posts "
+        f"({len(pairs_all) - n:,} pairs dropped for missing scores)."
+    )
+    _report(
+        f"LLM win rate: {wins / n * 100:.1f}% (95% CI [{lo * 100:.1f}, "
+        f"{hi * 100:.1f}]). Mean score gap (LLM minus human): {diff.mean():+.3f}."
+    )
+
+    # Post-weighted: each pair weighted 1/(pairs on that post), so every post
+    # contributes a total weight of one.
+    u = usable.copy()
+    u["win"] = (u["coreNoteIntercept_bot"] > u["coreNoteIntercept_human"]).astype(float)
+    u["gap"] = u["coreNoteIntercept_bot"] - u["coreNoteIntercept_human"]
+    per_post = u.groupby("tweetId").agg(win_share=("win", "mean"), gap=("gap", "mean"))
+    n2 = len(per_post)
+    win_rate = per_post["win_share"].mean() * 100 if n2 else np.nan
+    sd = per_post["win_share"].std()
+    half = (
+        stats.t.ppf(0.975, df=n2 - 1) * sd / np.sqrt(n2)
+        if n2 > 1 and sd == sd
+        else np.nan
+    )
+
+    _report("")
+    _report("### Post-weighted win rate")
+    _report("")
+    _report(
+        f"Posts: {n2:,}. Post-weighted LLM win rate: {win_rate:.1f}% "
+        f"(95% CI [{win_rate - half * 100:.1f}, {win_rate + half * 100:.1f}]). "
+        f"Weighted mean score gap: {per_post['gap'].mean():+.3f}."
+    )
     _report("")
 
 
@@ -873,7 +1032,7 @@ def text_features_analysis(notes_df: pd.DataFrame):
     - URL count: t-test
     - Top 10 cited domains by writer
     """
-    _report("## Text features analysis")
+    _report("### Text features")
     _report("")
 
     def _extract_features(text):
@@ -915,12 +1074,47 @@ def text_features_analysis(notes_df: pd.DataFrame):
 
     tests = [_two_sample("word_len", "word_len"), _two_sample("url_count", "url_count")]
 
-    _report("### Note length (word count)")
+    _report("#### Note length (word count)")
     _report_two_sample(tests[0], fmt=".1f")
     _report("")
-    _report("### Number of URLs")
+    _report("#### Number of URLs")
     _report_two_sample(tests[1])
     _report("")
+
+    # Readability, valence, toxicity (computed on note text with URLs
+    # removed, by note_text_style_features.py and detoxify_toxicity.py).
+    # Read from the precomputed CSVs (fast-start default); skip gracefully
+    # if they have not been generated.
+    style_path = os.path.join(DATA_DIR, "note_text_features.csv")
+    tox_path = os.path.join(DATA_DIR, "note_toxicity.csv")
+    if os.path.exists(style_path):
+        style = pd.read_csv(style_path)[
+            ["noteId", "flesch_kincaid_grade", "vader_compound"]
+        ]
+        style["noteId"] = style["noteId"].astype(notes_with_features["noteId"].dtype)
+        notes_with_features = notes_with_features.merge(style, on="noteId", how="left")
+        if os.path.exists(tox_path):
+            tox = pd.read_csv(tox_path)[["noteId", "toxicity"]]
+            tox["noteId"] = tox["noteId"].astype(notes_with_features["noteId"].dtype)
+            notes_with_features = notes_with_features.merge(tox, on="noteId", how="left")
+
+        _report("#### Readability (Flesch-Kincaid grade level, URLs removed)")
+        _report_two_sample(_two_sample("flesch_kincaid_grade", "flesch_kincaid_grade"))
+        _report("")
+        _report("#### Valence (VADER compound score, URLs removed)")
+        _report_two_sample(_two_sample("vader_compound", "vader_compound"), fmt=".3f")
+        _report("")
+        if "toxicity" in notes_with_features.columns:
+            _report("#### Toxicity (Detoxify unbiased checkpoint, URLs removed)")
+            _report_two_sample(_two_sample("toxicity", "toxicity"), fmt=".4f")
+            _report("")
+    else:
+        _report(
+            "Readability/valence/toxicity: `data/note_text_features.csv` not "
+            "found. Run `python note_text_style_features.py` (and "
+            "`python detoxify_toxicity.py` for toxicity) to generate it."
+        )
+        _report("")
 
     # Top domains
     from urllib.parse import urlparse
@@ -983,7 +1177,7 @@ def text_features_analysis(notes_df: pd.DataFrame):
             human_domain_counts.get(d, 0) / n_human_notes * 100 if n_human_notes else 0
         )
 
-    _report("\n### Source citation: Top domains by LLM vs human notes")
+    _report("\n#### Source citation: Top domains by LLM vs human notes")
     _report("")
     _report("**Top 10 domains in LLM notes:**")
     _report("| Rank | Domain | % LLM notes citing | % Human notes citing |")
@@ -1002,33 +1196,11 @@ def text_features_analysis(notes_df: pd.DataFrame):
             f"| {rank} | {domain} | {_pct_bot(domain):.1f}% | {_pct_human(domain):.1f}% |"
         )
 
-    # Save CSV
-    top_bot_set = {d for d, _ in top_bot}
-    citation_rows = []
-    for domain, _ in top_bot:
-        citation_rows.append(
-            {
-                "source": "LLM_top10",
-                "domain": domain,
-                "pct_llm": _pct_bot(domain),
-                "pct_human": _pct_human(domain),
-            }
-        )
-    for domain, _ in top_human:
-        if domain not in top_bot_set:
-            citation_rows.append(
-                {
-                    "source": "human_top10",
-                    "domain": domain,
-                    "pct_llm": _pct_bot(domain),
-                    "pct_human": _pct_human(domain),
-                }
-            )
     _report("")
 
 
 # =============================================================================
-# Appendix B: CRH rate and hit rate analysis
+# CRH rate and hit rate analysis
 # =============================================================================
 
 
@@ -1037,7 +1209,7 @@ def CRH_rate_analysis(notes_df: pd.DataFrame):
     Compare the bot's CRH rate and hit rate to the distribution across
     individual human writers.
     """
-    _report("## CRH rate analysis: bot vs human writers")
+    _report("### Writer percentile benchmarking: CRH rate")
     _report("(Human writers: all from notes-00000.tsv, excluding API authors)")
     _report("")
 
@@ -1064,7 +1236,7 @@ def CRH_rate_analysis(notes_df: pd.DataFrame):
     )
 
     # Hit rate: (#CRH - #CRNH) / total_notes
-    _report("\n## Hit rate analysis: (#CRH - #CRNH) / total notes")
+    _report("\n### Writer percentile benchmarking: hit rate (#CRH - #CRNH) / total notes")
     _report("")
     
     human_hit_rates = (human_crh_hit_rate["n_crh"] - human_crh_hit_rate["n_crnh"]) / human_crh_hit_rate["n_total"] * 100.0
@@ -1105,7 +1277,7 @@ def CRH_rate_analysis(notes_df: pd.DataFrame):
 
 
 # =============================================================================
-# Equal-exposure (complete-raters) analysis
+# common-rater analysis
 # =============================================================================
 
 
@@ -1153,14 +1325,14 @@ def add_internal_rating_status(note_params: pd.DataFrame) -> pd.DataFrame:
     return note_params
 
 
-def complete_raters_note_intercept_analysis(
+def common_raters_note_intercept_analysis(
     notes_df: pd.DataFrame,
     note_params_path: str | None = None,
     min_num_ratings: int = 5,
 ) -> tuple[dict | None, dict | None]:
     """
     Run t-test and Mann-Whitney U on note intercept (from noteParams)
-    for bot vs human notes using complete-rater estimates.
+    for bot vs human notes using common-rater estimates.
 
     Returns (two_sample_result, lmm_result) for deferred reporting.
     """
@@ -1193,21 +1365,21 @@ def complete_raters_note_intercept_analysis(
     res = _two_sample_tests(
         notes_with_params,
         "internalNoteIntercept",
-        "internalNoteIntercept (complete raters)",
+        "internalNoteIntercept (common raters)",
     )
     lmm_res = _run_note_intercept_lmm(
-        notes_with_params, "internalNoteIntercept", "Complete raters"
+        notes_with_params, "internalNoteIntercept", "Common raters"
     )
     return res, lmm_res
 
 
-def complete_raters_crh_crnh_analysis(
+def common_raters_crh_crnh_analysis(
     notes_df: pd.DataFrame,
     note_params_path: str | None = None,
 ) -> tuple[list[dict], list[dict | None]]:
     """
     Compute %CRH and %CRNH for bot vs human using internalRatingStatus
-    from complete-rater noteParams.
+    from common-rater noteParams.
 
     Returns (z_test_results, lmm_results) for deferred reporting with BH adjustment.
     Each z_test_results entry has keys: status_name, bot_rate, human_rate, z_stat, z_p.
@@ -1228,7 +1400,7 @@ def complete_raters_crh_crnh_analysis(
         note_params[["noteId", "internalRatingStatus"]], on="noteId", how="inner"
     )
 
-    _report("\n## %CRH and %CRNH (complete-raters noteParams)")
+    _report("\n### %CRH and %CRNH (common-raters noteParams)")
     _report("")
     status_cross = pd.crosstab(
         notes_with_status["writer"],
@@ -1279,106 +1451,118 @@ def complete_raters_crh_crnh_analysis(
         notes_with_status,
         "internalRatingStatus",
         "CURRENTLY_RATED_HELPFUL",
-        "Complete raters",
+        "Common raters",
     )
     res_crnh = _run_status_binary_lmm(
         notes_with_status,
         "internalRatingStatus",
         "CURRENTLY_RATED_NOT_HELPFUL",
-        "Complete raters",
+        "Common raters",
     )
 
     return z_test_results, [res_crh, res_crnh]
 
 
-def run_complete_raters_analyses(
+def run_common_raters_analyses(
     fast_start: bool = True,
-    analyses: set | None = None,
     note_params_path: str | None = None,
 ) -> None:
     """
-    Run analyses using only complete raters.
-    Applicable analyses: rating, note_intercept.
+    common-rater analysis: note-level outcomes computed from common raters
+    only, using the note parameters (noteParams.tsv) obtained by re-running
+    the Community Notes scorer on complete_rater_ratings.csv. Writes the
+    'common-rater' report section.
     """
-    analyses = analyses or set()
-    run_all = len(analyses) == 0
-
-    clear_report()
-    _report("# Bot vs Human Notes: Analysis Report (Complete Raters Only)")
-    _report("")
-
     notes_df, ratings_df = prepare_and_load_data(fast_start=fast_start)
 
-    print("\nFiltering to complete raters...")
-    ratings_filtered = filter_to_complete_raters(ratings_df, notes_df)
+    print("\nFiltering to common raters...")
+    ratings_filtered = filter_to_common_raters(ratings_df, notes_df)
     tweets_with_human = notes_df[notes_df["writer"] == "human"]["tweetId"].unique()
     notes_df_subset = notes_df[notes_df["tweetId"].isin(tweets_with_human)]
     _report(
-        f"Complete raters: {len(ratings_filtered):,} ratings, "
-        f"{ratings_filtered['noteId'].nunique():,} notes"
+        f"Common raters: {len(ratings_filtered):,} ratings, "
+        f"{ratings_filtered['noteId'].nunique():,} notes, "
+        f"{ratings_filtered['tweetId'].nunique():,} tweets, "
+        f"{ratings_filtered['raterParticipantId'].nunique():,} raters"
     )
     _report("")
 
-    if run_all or "note_intercept" in analyses:
-        note_params = note_params_path or os.path.join(DATA_DIR, "noteParams.tsv")
+    note_params = note_params_path or os.path.join(DATA_DIR, "noteParams.tsv")
 
-        # Collect results from both analyses
-        intercept_res, intercept_lmm_res = complete_raters_note_intercept_analysis(
-            notes_df_subset, note_params_path=note_params
-        )
-        z_test_results, crh_crnh_lmm_results = complete_raters_crh_crnh_analysis(
-            notes_df_subset, note_params_path=note_params
-        )
-
-        # BH adjustment: LMM only (CRH LMM, CRNH LMM, intercept LMM)
-        p_lmm = np.array([
-            crh_crnh_lmm_results[0]["p"] if len(crh_crnh_lmm_results) > 0 and crh_crnh_lmm_results[0] else np.nan,
-            crh_crnh_lmm_results[1]["p"] if len(crh_crnh_lmm_results) > 1 and crh_crnh_lmm_results[1] else np.nan,
-            intercept_lmm_res["p"] if intercept_lmm_res else np.nan,
-        ])
-        p_adj_lmm = _bh_adjust(p_lmm)
-
-        # Report proportion rates (descriptive only)
-        for sr in z_test_results:
-            _report(
-                f"  {sr['status_name']}: LLM={sr['bot_rate']:.2f}%  Human={sr['human_rate']:.2f}%"
-            )
-
-        # Report intercept descriptive stats (no t-test/U-test)
-        if intercept_res:
-            _report("\n--- Note intercept (internalNoteIntercept, complete raters) ---")
-            _report_two_sample(intercept_res, skip_t=True)
-
-        # Report LMMs with BH-adjusted p-values
-        _report_lmm_result("CRH", crh_crnh_lmm_results[0] if len(crh_crnh_lmm_results) > 0 else None, "Complete raters", p_adj_lmm[0])
-        _report_lmm_result("CRNH", crh_crnh_lmm_results[1] if len(crh_crnh_lmm_results) > 1 else None, "Complete raters", p_adj_lmm[1])
-        _report_lmm_result("Note intercept", intercept_lmm_res, "Complete raters", p_adj_lmm[2])
-
-    path = write_analysis_report(
-        os.path.join(OUTPUT_DIR, "analysis_report_complete_raters.md")
+    # Collect results from both analyses
+    intercept_res, intercept_lmm_res = common_raters_note_intercept_analysis(
+        notes_df_subset, note_params_path=note_params
     )
-    print(f"\nReport written to: {path}")
+    z_test_results, crh_crnh_lmm_results = common_raters_crh_crnh_analysis(
+        notes_df_subset, note_params_path=note_params
+    )
+
+    # BH adjustment across the three LMMs (CRH, CRNH, note intercept)
+    p_lmm = np.array(
+        [
+            crh_crnh_lmm_results[0]["p"]
+            if len(crh_crnh_lmm_results) > 0 and crh_crnh_lmm_results[0]
+            else np.nan,
+            crh_crnh_lmm_results[1]["p"]
+            if len(crh_crnh_lmm_results) > 1 and crh_crnh_lmm_results[1]
+            else np.nan,
+            intercept_lmm_res["p"] if intercept_lmm_res else np.nan,
+        ]
+    )
+    p_adj_lmm = _bh_adjust(p_lmm)
+
+    # Report proportion rates (descriptive only)
+    for sr in z_test_results:
+        _report(
+            f"  {sr['status_name']}: LLM={sr['bot_rate']:.2f}%  "
+            f"Human={sr['human_rate']:.2f}%"
+        )
+
+    # Report intercept descriptive stats (no t-test/U-test)
+    if intercept_res:
+        _report("\n--- Note intercept (internalNoteIntercept, common raters) ---")
+        _report_two_sample(intercept_res, skip_t=True)
+
+    # Report LMMs with BH-adjusted p-values
+    _report_lmm_result(
+        "CRH",
+        crh_crnh_lmm_results[0] if len(crh_crnh_lmm_results) > 0 else None,
+        "Common raters",
+        p_adj_lmm[0],
+    )
+    _report_lmm_result(
+        "CRNH",
+        crh_crnh_lmm_results[1] if len(crh_crnh_lmm_results) > 1 else None,
+        "Common raters",
+        p_adj_lmm[1],
+    )
+    _report_lmm_result(
+        "Note intercept", intercept_lmm_res, "Common raters", p_adj_lmm[2]
+    )
+
+    _flush_section("common-rater")
 
 
 # =============================================================================
-# Appendix D: Representativeness of complete raters
+# Representativeness of common raters
 # =============================================================================
 
 
 def rater_distribution_comparison(fast_start: bool = True) -> None:
     """
-    Compare coreRaterIntercept and coreRaterFactor1 distributions between
-    full rater population and equal-exposure subset.
+    Compare coreRaterIntercept and coreRaterFactor1 distributions between the
+    full rater population and the common-rater subset. Writes the
+    'representativeness' report section.
     """
     print("=" * 80)
-    print("RATER DISTRIBUTION: Full Sample vs. Complete Raters")
+    print("RATER DISTRIBUTION: Full Sample vs. Common Raters")
     print("=" * 80)
 
     notes_df, ratings_df = prepare_and_load_data(fast_start=fast_start)
 
     full_rater_ids = ratings_df["raterParticipantId"].unique()
-    ratings_filtered = filter_to_complete_raters(ratings_df, notes_df)
-    complete_rater_ids = ratings_filtered["raterParticipantId"].unique()
+    ratings_filtered = filter_to_common_raters(ratings_df, notes_df)
+    common_rater_ids = ratings_filtered["raterParticipantId"].unique()
 
     help_cols = ["raterParticipantId", "coreRaterIntercept", "coreRaterFactor1"]
     helpfulness_sub = ratings_df[help_cols].drop_duplicates()
@@ -1386,12 +1570,21 @@ def rater_distribution_comparison(fast_start: bool = True) -> None:
     full_raters = helpfulness_sub[
         helpfulness_sub["raterParticipantId"].isin(full_rater_ids)
     ].copy()
-    complete_raters = helpfulness_sub[
-        helpfulness_sub["raterParticipantId"].isin(complete_rater_ids)
+    common_raters = helpfulness_sub[
+        helpfulness_sub["raterParticipantId"].isin(common_rater_ids)
     ].copy()
 
-    print(f"\nFull sample raters: {len(full_raters):,}")
-    print(f"Complete raters: {len(complete_raters):,}")
+    _report(
+        f"Full sample raters: {len(full_raters):,}; "
+        f"common raters: {len(common_raters):,}."
+    )
+    _report(
+        "Distributions of coreRaterIntercept (helpfulness leniency) and "
+        "coreRaterFactor1 (political leaning) are compared in "
+        "`rater_distribution_full_vs_complete_raters.png`. "
+        "See the topic-distribution section for the topic representativeness "
+        "chi-square test."
+    )
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     for ax, col, title in [
@@ -1400,7 +1593,7 @@ def rater_distribution_comparison(fast_start: bool = True) -> None:
     ]:
         for df, label, alpha in [
             (full_raters, "Full sample", 0.5),
-            (complete_raters, "Complete raters", 0.5),
+            (common_raters, "Common raters", 0.5),
         ]:
             vals = df[col].dropna()
             if len(vals) > 0:
@@ -1423,10 +1616,11 @@ def rater_distribution_comparison(fast_start: bool = True) -> None:
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"\nSaved histogram to {out_path}")
+    _flush_section("representativeness")
 
 
 # =============================================================================
-# Appendix A: Within-rater pairwise Bradley-Terry
+# Within-rater pairwise Bradley-Terry
 # =============================================================================
 
 SCORE_MAP = {"HELPFUL": 1.0, "SOMEWHAT_HELPFUL": 0.5, "NOT_HELPFUL": 0.0}
@@ -1556,7 +1750,7 @@ def _run_bradley_terry(df: pd.DataFrame) -> dict | None:
 
 def run_pairwise_bt_analysis(
     notes_df: pd.DataFrame,
-    ratings_df: pd.DataFrame
+    ratings_df: pd.DataFrame,
 ) -> pd.DataFrame | None:
     """
     Run pair-centric pairwise comparison with Bradley-Terry model.
@@ -1565,8 +1759,6 @@ def run_pairwise_bt_analysis(
     note pairs. For each pair, restricts to raters who rated BOTH notes.
     Fits Bradley-Terry models.
     """
-    _report("# Pair-Centric Pairwise / Bradley-Terry Analysis")
-    _report("")
     _report(
         f"Notes: {len(notes_df):,} "
         f"(bot: {(notes_df['writer'] == 'bot').sum():,}, "
@@ -1581,7 +1773,7 @@ def run_pairwise_bt_analysis(
         _report("No pair-centric observations. Exiting.")
         return None
 
-    _report("## Sample sizes")
+    _report("### Sample sizes")
     _report(f"  Total (rater, pair) observations: {len(df):,}")
     _report(f"  Unique pairs: {df['pair_id'].nunique():,}")
     _report(f"  Unique raters: {df['rater_id'].nunique():,}")
@@ -1590,9 +1782,21 @@ def run_pairwise_bt_analysis(
     df["pair_id"] = df["pair_id"].astype(str)
     df["rater_id"] = df["rater_id"].astype(str)
 
+    # Outcome proportions
+    n_total = len(df)
+    n_tie = int((df["outcome"] == 0.5).sum())
+    n_ai_win = int((df["outcome"] == 1.0).sum())
+    n_human_win = int((df["outcome"] == 0.0).sum())
+    _report("### Outcome proportions (all rater-pair observations)")
+    _report(
+        f"  Tie: {n_tie:,} ({n_tie / n_total * 100:.1f}%), "
+        f"AI win: {n_ai_win:,} ({n_ai_win / n_total * 100:.1f}%), "
+        f"Human win: {n_human_win:,} ({n_human_win / n_total * 100:.1f}%)"
+    )
+    _report("")
 
     # Bradley-Terry
-    _report("## Bradley-Terry (ties excluded, SEs clustered by rater)")
+    _report("### Bradley-Terry (ties excluded, SEs clustered by rater)")
     res = _run_bradley_terry(df)
     if res:
         _report("```")
@@ -1600,14 +1804,18 @@ def run_pairwise_bt_analysis(
         _report("```")
         _report("")
         _report(f"beta_AI = {res['beta_AI']:.4f} (SE = {res['se_clustered']:.4f})")
-        _report(f"exp(beta_AI) = {np.exp(res['beta_AI']):.4f} (odds multiplier for AI vs. human)")
-        _report(f"n (non-ties): {res['n']:,}, ties excluded: {res['n_ties_excluded']:,}")
+        _report(
+            f"exp(beta_AI) = {np.exp(res['beta_AI']):.4f} "
+            "(odds multiplier for AI vs. human)"
+        )
+        tie_rate = res["n_ties_excluded"] / len(df) * 100
+        pref_ai = 1 / (1 + np.exp(-res["beta_AI"])) * 100
+        _report(
+            f"n (non-ties): {res['n']:,}, ties excluded: {res['n_ties_excluded']:,} "
+            f"(tie rate {tie_rate:.0f}%)"
+        )
+        _report(f"AI preferred in {pref_ai:.1f}% of non-tied comparisons")
     _report("")
-
-    # Save outputs
-    out_csv = os.path.join(OUTPUT_DIR, "pairwise_bt_comparisons.csv")
-    df.to_csv(out_csv, index=False)
-    _report(f"Saved pair-centric data to {out_csv}")
 
     return df
 
@@ -1617,45 +1825,93 @@ def run_pairwise_bt_analysis(
 # =============================================================================
 
 
-def run_all_analyses(fast_start: bool = True, analyses: set | None = None):
+def dataset_summary(notes_df: pd.DataFrame, ratings_df: pd.DataFrame):
+    """Dataset counts reported in the Abstract and Data and Methods."""
+    n_bot = (notes_df["writer"] == "bot").sum()
+    n_human = (notes_df["writer"] == "human").sum()
+    bot_tweets = notes_df[notes_df["writer"] == "bot"]["tweetId"]
+    multi_llm_posts = (bot_tweets.value_counts() > 1).sum()
+    _report(f"Notes: {len(notes_df):,} (LLM: {n_bot:,}, human: {n_human:,})")
+    _report(f"Unique tweets: {notes_df['tweetId'].nunique():,}")
+    _report(f"Ratings: {len(ratings_df):,}")
+    _report(f"Unique raters: {ratings_df['raterParticipantId'].nunique():,}")
+    _report(f"Posts with more than one LLM note: {multi_llm_posts:,}")
+
+
+def run_default_analyses(fast_start: bool = True, analyses: set | None = None):
     """
-    Run analysis functions and write results to analysis_report.md.
+    Run the full-sample analyses and update the corresponding sections of
+    outputs/analysis_report.md.
 
     Parameters
     ----------
     fast_start : bool
         Load pre-computed CSVs (True) or process from raw TSVs (False).
     analyses : set or None
-        Set of analysis names to run. If empty/None, run all.
-        Valid: rating, note, timing, text, crh, timing_matched, pairwise_bt.
+        Analysis names to run (each maps to one report section). If
+        empty/None, run all. Valid: dataset, rating, note, timing, text,
+        timing_matched, win_rate, pairwise_bt.
     """
     analyses = analyses or set()
     run_all = len(analyses) == 0
 
-    clear_report()
-    _report("# Bot vs Human Notes: Analysis Report")
-    _report("")
-
     notes_df, ratings_df = prepare_and_load_data(fast_start=fast_start)
 
+    if run_all or "dataset" in analyses:
+        dataset_summary(notes_df, ratings_df)
+        _flush_section("dataset")
     if run_all or "rating" in analyses:
-        _report("Run rating-level mixed effects analysis with data/ratings_analysis_df.csv in analysis.R")
         rating_analysis_by_bucket()
+        _flush_section("rating-buckets")
     if run_all or "note" in analyses:
         note_level_analysis(notes_df)
+        CRH_rate_analysis(notes_df)
+        _flush_section("note-level")
     if run_all or "timing_matched" in analyses:
+        thresholds_analysis(notes_df)
         timing_matched_analysis(notes_df)
+        _flush_section("robustness")
+    if run_all or "win_rate" in analyses:
+        win_rate_analysis(notes_df)
+        _flush_section("win-rate")
     if run_all or "timing" in analyses:
         human_bot_timing_analysis(notes_df)
+        _flush_section("timing")
     if run_all or "text" in analyses:
         text_features_analysis(notes_df)
-    if run_all or "crh" in analyses:
-        CRH_rate_analysis(notes_df)
+        _flush_section("text-features")
     if run_all or "pairwise_bt" in analyses:
         run_pairwise_bt_analysis(notes_df, ratings_df)
+        _flush_section("pairwise-bt")
 
-    path = write_analysis_report()
-    print(f"\nReport written to: {path}")
+
+def run_both_notes_analyses(fast_start: bool = True):
+    """
+    Restrict to posts with at least one LLM and one human note, then re-run
+    the rating-bucket means and the note-level outcomes on that subset.
+    Updates the 'both-notes' report section. (The subset AI coefficient and
+    subset column come from rating_analysis.R.)
+    """
+    notes_df, ratings_df = prepare_and_load_data(fast_start=fast_start)
+
+    bot_tweets = set(notes_df[notes_df["writer"] == "bot"]["tweetId"])
+    human_tweets = set(notes_df[notes_df["writer"] == "human"]["tweetId"])
+    both_tweets = bot_tweets & human_tweets
+    n_notes_before, n_ratings_before = len(notes_df), len(ratings_df)
+    notes_df = notes_df[notes_df["tweetId"].isin(both_tweets)]
+    ratings_df = ratings_df[ratings_df["noteId"].isin(notes_df["noteId"])]
+    _report(
+        f"Restricted to {len(both_tweets):,} tweets with both note types: "
+        f"{len(notes_df):,}/{n_notes_before:,} notes "
+        f"(LLM: {(notes_df['writer'] == 'bot').sum():,}, "
+        f"human: {(notes_df['writer'] == 'human').sum():,}), "
+        f"{len(ratings_df):,}/{n_ratings_before:,} ratings"
+    )
+    _report("")
+
+    rating_analysis_by_bucket(both_writers_only=True, save_figure=False)
+    note_level_analysis(notes_df)
+    _flush_section("both-notes")
 
 
 # =============================================================================
@@ -1663,57 +1919,60 @@ def run_all_analyses(fast_start: bool = True, analyses: set | None = None):
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Bot vs Human notes analysis")
+    parser = argparse.ArgumentParser(description="LLM vs human notes analysis")
     parser.add_argument(
         "--no-fast-start",
         action="store_true",
-        help="Process from raw TSVs (slower)",
+        help="Process from raw TSVs (requires the raw Community Notes snapshot)",
     )
     parser.add_argument(
-        "--analyze-with-complete-raters",
+        "--analyze-with-common-raters",
         action="store_true",
-        help="Run rating and note-intercept analyses with complete raters only",
+        help="common-rater analysis with common raters only",
     )
     parser.add_argument(
         "--rater-distribution",
         action="store_true",
-        help="Compare rater distribution (full vs complete_rater)",
+        help="Rater distribution, full vs common raters",
+    )
+    parser.add_argument(
+        "--both-notes-only",
+        action="store_true",
+        help="Appendix replication on tweets with >=1 LLM and >=1 human note",
     )
     parser.add_argument(
         "--analysis",
         nargs="*",
         choices=[
+            "dataset",
             "rating",
             "note",
-            "note_intercept",
             "timing",
             "text",
-            "crh",
             "timing_matched",
             "pairwise_bt",
         ],
-        help="Analyses to run (default: all)",
+        help="Default-mode analyses to run (default: all)",
     )
     parser.add_argument(
         "--note-params-path",
         type=str,
         default=None,
-        help="Path to noteParams.tsv",
+        help="Path to noteParams.tsv (common-rater note parameters)",
     )
     args = parser.parse_args()
 
-    note_params_path = args.note_params_path or os.path.join(
-        DATA_DIR, "noteParams.tsv"
-    )
-    analyses = set(args.analysis) if args.analysis else set()
-
     if args.rater_distribution:
         rater_distribution_comparison(fast_start=not args.no_fast_start)
-    elif args.analyze_with_complete_raters:
-        run_complete_raters_analyses(
+    elif args.analyze_with_common_raters:
+        run_common_raters_analyses(
             fast_start=not args.no_fast_start,
-            analyses=analyses,
-            note_params_path=note_params_path,
+            note_params_path=args.note_params_path,
         )
+    elif args.both_notes_only:
+        run_both_notes_analyses(fast_start=not args.no_fast_start)
     else:
-        run_all_analyses(fast_start=not args.no_fast_start, analyses=analyses)
+        run_default_analyses(
+            fast_start=not args.no_fast_start,
+            analyses=set(args.analysis) if args.analysis else set(),
+        )

@@ -3,3 +3,10 @@
 __pycache__/
 *.pyc
 .env*
+CLAUDE.md
+.claude/
+paper/
+icml2026/
+code/outputs/*.csv
+
+code/data/no_note_or_not_enough_evidence.txt
