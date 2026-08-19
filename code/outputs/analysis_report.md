@@ -15,7 +15,7 @@ Posts with more than one LLM note: 17
 <!-- END dataset -->
 
 <!-- BEGIN timing -->
-## Timing and exposure (Section 3.1)
+## Timing and exposure
 
 ### Human vs LLM note timing (createdAtMillis)
 
@@ -33,7 +33,7 @@ Human notes on tweets with both types: 1,331
 <!-- END timing -->
 
 <!-- BEGIN rating-buckets -->
-## Ratings by rater ideology (Section 3.2, Figure 1, Table A1)
+## Ratings by rater ideology (Figure 1)
 
 ### Ratings by rater ideology bucket
 
@@ -77,9 +77,9 @@ Equation 1 estimates from rating_analysis.R (Table 1). Cells show coefficient (S
 | Intercept | 0.785*** (0.006) | 0.842*** (0.005) | 0.826*** (0.010) | 0.785*** (0.007) |
 | AI | 0.104*** (0.009) | 0.066*** (0.004) | 0.082*** (0.012) | 0.098*** (0.010) |
 | coreRaterFactor1 | -0.015*** (0.004) | -0.007 (0.004) | -0.005 (0.032) |  |
-| coreRaterFactor1^2 | -0.175*** (0.010) | -0.195*** (0.010) | -0.291*** (0.030) |  |
+| coreRaterFactor1^2 | -0.175*** (0.010) | -0.195*** (0.010) | -0.291*** (0.032) |  |
 | AI x coreRaterFactor1 | -0.087*** (0.005) | -0.112*** (0.005) | -0.120** (0.046) |  |
-| AI x coreRaterFactor1^2 | -0.190*** (0.013) | -0.169*** (0.013) | -0.181*** (0.047) |  |
+| AI x coreRaterFactor1^2 | -0.190*** (0.013) | -0.169*** (0.013) | -0.181*** (0.048) |  |
 | Left-leaning rater |  |  |  | -0.031*** (0.005) |
 | Right-leaning rater |  |  |  | -0.059*** (0.005) |
 | AI x left-leaning rater |  |  |  | -0.003 (0.007) |
@@ -147,8 +147,36 @@ All                                        35                           20      
   Note intercept LMM (Complete raters): AI coef=0.0188, SE=0.0064, z=2.9442, p=0.003238 (unadjusted), p_adj=0.009713 (BH) (n=773)
 <!-- END equal-exposure -->
 
+<!-- BEGIN common-rater -->
+## common-rater note-level analysis
+
+Common raters: 13,721 ratings, 1,674 notes, 663 tweets, 4,348 raters
+
+
+### %CRH and %CRNH (common-raters noteParams)
+
+```
+internalRatingStatus  CURRENTLY_RATED_HELPFUL  CURRENTLY_RATED_NOT_HELPFUL  NEED_MORE_RATINGS   All
+writer                                                                                             
+bot                                        16                            6                645   667
+human                                      19                           14                974  1007
+All                                        35                           20               1619  1674
+```
+
+  %CRH: LLM=2.40%  Human=1.89%
+  %CRNH: LLM=0.90%  Human=1.39%
+
+--- Note intercept (internalNoteIntercept, common raters) ---
+  n_bot=315, n_human=458
+  mean: Bot=0.21  Human=0.18
+  median: Bot=0.22  Human=0.20
+  CRH LMM (Common raters): AI coef=0.0015, SE=0.0044, z=0.3315, p=0.740271 (unadjusted), p_adj=0.740271 (BH) (n=1,674)
+  CRNH LMM (Common raters): AI coef=-0.0049, SE=0.0053, z=-0.9261, p=0.354371 (unadjusted), p_adj=0.531557 (BH) (n=1,674)
+  Note intercept LMM (Common raters): AI coef=0.0188, SE=0.0064, z=2.9442, p=0.003238 (unadjusted), p_adj=0.009713 (BH) (n=773)
+<!-- END common-rater -->
+
 <!-- BEGIN text-features -->
-## Note length, URLs, and cited domains (Section 3.4)
+## Note length, URLs, and cited domains
 
 ### Text features
 
@@ -215,7 +243,7 @@ All                                        35                           20      
 <!-- END text-features -->
 
 <!-- BEGIN mbfc -->
-## MBFC source quality (Section 3.4)
+## MBFC source quality
 
 ### Coverage
 
@@ -288,7 +316,7 @@ Figure saved: mbfc_distributions.png
 <!-- END mbfc -->
 
 <!-- BEGIN domain-quality -->
-## Domain-quality robustness check (Section 3.4)
+## Domain-quality robustness check
 
 Source quality scored with `domain_pc1.csv` (11,519 domains; 0 = low quality, 1 = high quality). This repeats the `mbfc` analysis table for table, changing only the quality measure. URL extraction, domain normalization and subdomain-stripped matching are identical, so the coverage figures are directly comparable with the MBFC section of the main report.
 
@@ -349,7 +377,7 @@ Figure saved: domain_pc1_distributions.png
 <!-- END domain-quality -->
 
 <!-- BEGIN rater-tags -->
-## Rater-provided tags (Section 3.5)
+## Rater-provided tags
 
 SOMEWHAT_HELPFUL ratings are eligible for both helpful and not-helpful tags. Rating-weighted rows are descriptive only; inference is from paired tweet-level AI-minus-human differences after averaging note-level tag proportions within tweet and writer type.
 Matched-tweet estimand restricted to 814 tweets with both AI and human notes.
@@ -382,7 +410,7 @@ Matched-tweet estimand restricted to 814 tweets with both AI and human notes.
 <!-- END rater-tags -->
 
 <!-- BEGIN pairwise-bt -->
-## Within-rater pairwise comparison (Appendix A)
+## Within-rater pairwise comparison
 
 Notes: 2,946 (bot: 1,614, human: 1,332)
 Ratings: 108,169
@@ -402,8 +430,8 @@ Ratings: 108,169
 Dep. Variable:                      y   No. Observations:                 6371
 Model:                          Logit   Df Residuals:                     6370
 Method:                           MLE   Df Model:                            0
-Date:                Mon, 17 Aug 2026   Pseudo R-squ.:               7.840e-11
-Time:                        20:56:02   Log-Likelihood:                -4391.0
+Date:                Tue, 18 Aug 2026   Pseudo R-squ.:               7.840e-11
+Time:                        21:11:38   Log-Likelihood:                -4391.0
 converged:                       True   LL-Null:                       -4391.0
 Covariance Type:              cluster   LLR p-value:                       nan
 ==============================================================================
@@ -420,7 +448,7 @@ AI preferred in 54.4% of non-tied comparisons
 <!-- END pairwise-bt -->
 
 <!-- BEGIN note-level -->
-## Full-sample note-level outcomes (Appendix B, Table A2)
+## Full-sample note-level outcomes
 
 ### Note-level analysis: LLM vs human
 
@@ -468,9 +496,9 @@ Robustness (human writers with >= 30 notes): CRH percentile=78.4%, hit rate perc
 <!-- END note-level -->
 
 <!-- BEGIN robustness -->
-## Note-level robustness checks (Appendix C, Tables A3-A4)
+## Note-level robustness checks
 
-### Sensitivity to minimum rating thresholds (Table A3)
+### Sensitivity to minimum rating thresholds
 
 
 #### numRatings >= 10
@@ -548,7 +576,7 @@ Notes retained: 1,142 (bot: 466/1,614, human: 676/1,332)
   median: Bot=6.47  Human=5.51
   Mann-Whitney U: U=15055.00, p=0.048731
 
-### Creation-time-matched subsets (Table A4)
+### Creation-time-matched subsets
 
 Window +/- 30 min: matched 102/1614 bot notes (6.3%)
 ### Note-level analysis: LLM vs human (timing_30min)
@@ -693,7 +721,7 @@ All                                    113                           21         
 <!-- END robustness -->
 
 <!-- BEGIN win-rate -->
-## Within-post pairwise comparison of note helpfulness scores (Appendix C)
+## Within-post pairwise comparison of note helpfulness scores
 
 A 'win' means the LLM note has the higher `coreNoteIntercept`. Notes the scorer never assigned an intercept to (too few ratings) are excluded.
 
@@ -708,13 +736,13 @@ Posts: 606. Post-weighted LLM win rate: 46.4% (95% CI [42.8, 50.1]). Weighted me
 <!-- END win-rate -->
 
 <!-- BEGIN topic-dist -->
-## Topic distribution across post samples (Appendices D-E)
+## Topic distribution across post samples
 
-N posts: All posts: 1,597, Posts w/ both note types: 814, Complete-rater posts: 663
+N posts: All posts: 1,597, Posts w/ both note types: 814, Common-rater posts: 663
 
 ### Percent of posts per topic
 
-| Topic | All posts | Posts w/ both note types | Complete-rater posts |
+| Topic | All posts | Posts w/ both note types | Common-rater posts |
 |---|---|---|---|
 | Politics & Elections | 23.0% (367) | 21.4% (174) | 21.9% (145) |
 | Geopolitics & International Conflicts | 16.2% (259) | 17.1% (139) | 17.0% (113) |
@@ -731,20 +759,20 @@ N posts: All posts: 1,597, Posts w/ both note types: 814, Complete-rater posts: 
 ### Chi-square goodness-of-fit vs. all-posts distribution
 
 - Posts w/ both note types: chi2=9.29, df=10, p=0.5052, JS distance=0.0386
-- Complete-rater posts: chi2=9.96, df=10, p=0.4436, JS distance=0.0444
+- Common-rater posts: chi2=9.96, df=10, p=0.4436, JS distance=0.0444
 
 *Sets are nested subsets, so treat tests as descriptive summaries of distributional shift rather than independent-sample tests.*
 <!-- END topic-dist -->
 
 <!-- BEGIN representativeness -->
-## Rater representativeness (Appendix D, Figure A1)
+## Rater representativeness
 
-Full sample raters: 42,521; complete raters: 4,348.
-Distributions of coreRaterIntercept (helpfulness leniency) and coreRaterFactor1 (political leaning) are compared in `rater_distribution_full_vs_complete_raters.png` (Figure A1). See the topic-distribution section for the topic representativeness chi-square test.
+Full sample raters: 42,521; common raters: 4,348.
+Distributions of coreRaterIntercept (helpfulness leniency) and coreRaterFactor1 (political leaning) are compared in `rater_distribution_full_vs_complete_raters.png`. See the topic-distribution section for the topic representativeness chi-square test.
 <!-- END representativeness -->
 
 <!-- BEGIN both-notes -->
-## Posts with both note types (Appendix E, Tables A5-A6)
+## Posts with both note types
 
 Restricted to 814 tweets with both note types: 2,152/2,946 notes (LLM: 821, human: 1,331), 94,347/108,169 ratings
 
